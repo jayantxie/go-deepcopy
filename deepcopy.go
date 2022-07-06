@@ -7,32 +7,37 @@ import (
 
 type copier func(interface{}, map[uintptr]interface{}) (interface{}, error)
 
-var copiers map[Kind]copier
+var (
+	copiers   map[Kind]copier
+	primitive map[Kind]struct{}
+)
 
 func init() {
 	copiers = map[Kind]copier{
-		Bool:       _primitive,
-		Int:        _primitive,
-		Int8:       _primitive,
-		Int16:      _primitive,
-		Int32:      _primitive,
-		Int64:      _primitive,
-		Uint:       _primitive,
-		Uint8:      _primitive,
-		Uint16:     _primitive,
-		Uint32:     _primitive,
-		Uint64:     _primitive,
-		Uintptr:    _primitive,
-		Float32:    _primitive,
-		Float64:    _primitive,
-		Complex64:  _primitive,
-		Complex128: _primitive,
-		Array:      _array,
-		Map:        _map,
-		Ptr:        _pointer,
-		Slice:      _slice,
-		String:     _primitive,
-		Struct:     _struct,
+		Array:  _array,
+		Map:    _map,
+		Ptr:    _pointer,
+		Slice:  _slice,
+		Struct: _struct,
+	}
+	primitive = map[Kind]struct{}{
+		Bool:       {},
+		Int:        {},
+		Int8:       {},
+		Int16:      {},
+		Int32:      {},
+		Int64:      {},
+		Uint:       {},
+		Uint8:      {},
+		Uint16:     {},
+		Uint32:     {},
+		Uint64:     {},
+		Uintptr:    {},
+		Float32:    {},
+		Float64:    {},
+		Complex64:  {},
+		Complex128: {},
+		String:     {},
 	}
 }
 
@@ -43,16 +48,6 @@ func MustAnything(x interface{}) interface{} {
 		panic(err)
 	}
 	return dc
-}
-
-// Primitive makes a copy of a primitive type...which just means it returns the input value.
-// This is wholly uninteresting, but I included it for consistency's sake.
-func _primitive(x interface{}, ptrs map[uintptr]interface{}) (interface{}, error) {
-	kind := ValueOf(x).Kind()
-	if kind == Array || kind == Chan || kind == Func || kind == Interface || kind == Map || kind == Ptr || kind == Slice || kind == Struct || kind == UnsafePointer {
-		return nil, fmt.Errorf("unable to copy %v (a %v) as a primitive", x, kind)
-	}
-	return x, nil
 }
 
 // Anything makes a deep copy of whatever gets passed in. It handles pretty much all known Go types
@@ -68,9 +63,33 @@ func Anything(x interface{}) (interface{}, error) {
 	return _anything(x, ptrs)
 }
 
+// StructPointerCopy copies x to y.
+// NOTICE: Make sure neither x nor y is nil.
+func StructPointerCopy(x, y interface{}) error {
+	xv, yv := ValueOf(x), ValueOf(y)
+	if xv.Kind() != Ptr || yv.Kind() != Ptr {
+		return fmt.Errorf("must pass value with kind of Ptr; got %v, %v", xv.Kind(), yv.Kind())
+	}
+	if xv.IsNil() || yv.IsNil() {
+		return fmt.Errorf("must pass not nil value; got %v, %v", x, y)
+	}
+	if xv.Type() != yv.Type() {
+		return fmt.Errorf("must pass same type value; got %v %v", x, y)
+	}
+	if xv.Elem().Kind() != Struct || yv.Elem().Kind() != Struct {
+		return fmt.Errorf("must pass struct kind value; got %v %v", x, y)
+	}
+	ptrs := make(map[uintptr]interface{})
+	ptrs[xv.Pointer()] = y
+	return _struct_pointer(x, y, ptrs)
+}
+
 func _anything(x interface{}, ptrs map[uintptr]interface{}) (interface{}, error) {
 	v := ValueOf(x)
 	if !v.IsValid() {
+		return x, nil
+	}
+	if _, ok := primitive[v.Kind()]; ok {
 		return x, nil
 	}
 	if c, ok := copiers[v.Kind()]; ok {
@@ -136,8 +155,8 @@ func _pointer(x interface{}, ptrs map[uintptr]interface{}) (interface{}, error) 
 		return nil, fmt.Errorf("must pass a value with kind of Ptr; got %v", v.Kind())
 	}
 
+	t := TypeOf(x)
 	if v.IsNil() {
-		t := TypeOf(x)
 		return Zero(t).Interface(), nil
 	}
 
@@ -145,20 +164,51 @@ func _pointer(x interface{}, ptrs map[uintptr]interface{}) (interface{}, error) 
 	if dc, ok := ptrs[addr]; ok {
 		return dc, nil
 	}
-	t := TypeOf(x)
 	dc := New(t.Elem())
 	ptrs[addr] = dc.Interface()
 
-	item, err := _anything(v.Elem().Interface(), ptrs)
-	if err != nil {
-		return nil, fmt.Errorf("failed to copy the value under the pointer %v: %v", v, err)
+	switch v.Elem().Kind() {
+	case Struct:
+		err := _struct_pointer(x, dc.Interface(), ptrs)
+		if err != nil {
+			return nil, err
+		}
+		return dc.Interface(), nil
+	case Array:
+		err := _array_pointer(x, dc.Interface(), ptrs)
+		if err != nil {
+			return nil, err
+		}
+		return dc.Interface(), nil
+	default:
+		item, err := _anything(v.Elem().Interface(), ptrs)
+		if err != nil {
+			return nil, fmt.Errorf("failed to copy the value under the pointer %v: %v", v, err)
+		}
+		iv := ValueOf(item)
+		if iv.IsValid() {
+			dc.Elem().Set(ValueOf(item))
+		}
+		return dc.Interface(), nil
 	}
-	iv := ValueOf(item)
-	if iv.IsValid() {
-		dc.Elem().Set(ValueOf(item))
-	}
+}
 
-	return dc.Interface(), nil
+func _struct_pointer(x, y interface{}, ptrs map[uintptr]interface{}) error {
+	v := ValueOf(x).Elem()
+	t := v.Type()
+	dc := ValueOf(y).Elem()
+	for i := 0; i < t.NumField(); i++ {
+		f := t.Field(i)
+		if f.PkgPath != "" {
+			continue
+		}
+		item, err := _anything(v.Field(i).Interface(), ptrs)
+		if err != nil {
+			return fmt.Errorf("failed to copy the field %v in the struct %#v: %v", t.Field(i).Name, x, err)
+		}
+		dc.Field(i).Set(ValueOf(item))
+	}
+	return nil
 }
 
 func _struct(x interface{}, ptrs map[uintptr]interface{}) (interface{}, error) {
@@ -198,4 +248,19 @@ func _array(x interface{}, ptrs map[uintptr]interface{}) (interface{}, error) {
 		dc.Index(i).Set(ValueOf(item))
 	}
 	return dc.Interface(), nil
+}
+
+func _array_pointer(x, y interface{}, ptrs map[uintptr]interface{}) error {
+	v := ValueOf(x).Elem()
+	t := v.Type()
+	size := t.Len()
+	dc := ValueOf(y).Elem()
+	for i := 0; i < size; i++ {
+		item, err := _anything(v.Index(i).Interface(), ptrs)
+		if err != nil {
+			return fmt.Errorf("failed to clone array item at index %v: %v", i, err)
+		}
+		dc.Index(i).Set(ValueOf(item))
+	}
+	return nil
 }
