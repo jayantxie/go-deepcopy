@@ -46,8 +46,8 @@ type Foo struct {
 
 func ExampleMap() {
 	x := map[string]*Foo{
-		"foo": &Foo{Bar: 1},
-		"bar": &Foo{Bar: 2},
+		"foo": {Bar: 1},
+		"bar": {Bar: 2},
 	}
 	y := MustAnything(x).(map[string]*Foo)
 	for _, k := range []string{"foo", "bar"} { // to ensure consistent order
@@ -143,7 +143,6 @@ func TestMismatchedTypesFail(t *testing.T) {
 			}
 			actual, err := copier(test.input, nil)
 			if actual != nil {
-
 				t.Errorf("%v attempted value %v as %v; should be nil value, got %v", test.kind, test.input, kind, actual)
 			}
 			if err == nil {
@@ -161,8 +160,8 @@ func TestTwoNils(t *testing.T) {
 		B int
 	}
 	type FooBar struct {
-		Foo *Foo
-		Bar *Bar
+		Foo  *Foo
+		Bar  *Bar
 		Foo2 *Foo
 		Bar2 *Bar
 	}
@@ -177,5 +176,10 @@ func TestTwoNils(t *testing.T) {
 	if !DeepEqual(src, dst) {
 		t.Errorf("expect %v == %v; ", src, dst)
 	}
+}
 
+func TestMustString(t *testing.T) {
+	s := "123456"
+	ss := MustString(s)
+	fmt.Println(ss == s)
 }

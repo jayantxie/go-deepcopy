@@ -3,6 +3,7 @@ package deepcopy
 import (
 	"fmt"
 	. "reflect"
+	"unsafe"
 )
 
 type copier func(interface{}, map[uintptr]interface{}) (interface{}, error)
@@ -19,6 +20,7 @@ func init() {
 		Ptr:    _pointer,
 		Slice:  _slice,
 		Struct: _struct,
+		String: _string,
 	}
 	primitive = map[Kind]struct{}{
 		Bool:       {},
@@ -37,7 +39,6 @@ func init() {
 		Float64:    {},
 		Complex64:  {},
 		Complex128: {},
-		String:     {},
 	}
 }
 
@@ -84,6 +85,12 @@ func StructPointerCopy(x, y interface{}) error {
 	return _struct_pointer(x, y, ptrs)
 }
 
+func MustString(s string) string {
+	buf := []byte(s)
+	ns := (*string)(unsafe.Pointer(&buf))
+	return *ns
+}
+
 func _anything(x interface{}, ptrs map[uintptr]interface{}) (interface{}, error) {
 	v := ValueOf(x)
 	if !v.IsValid() {
@@ -97,6 +104,16 @@ func _anything(x interface{}, ptrs map[uintptr]interface{}) (interface{}, error)
 	}
 	t := TypeOf(x)
 	return nil, fmt.Errorf("unable to make a deep copy of %v (type: %v) - kind %v is not supported", x, t, v.Kind())
+}
+
+func _string(x interface{}, ptrs map[uintptr]interface{}) (interface{}, error) {
+	if s, ok := x.(string); ok {
+		buf := []byte(s)
+		ns := (*string)(unsafe.Pointer(&buf))
+		return *ns, nil
+	} else {
+		return nil, fmt.Errorf("must pass a string value; got %v", x)
+	}
 }
 
 func _slice(x interface{}, ptrs map[uintptr]interface{}) (interface{}, error) {
